@@ -1,0 +1,25 @@
+# 敏感信息 - 服务器连接配置
+SERVER_CONNECTION.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志
+*.log
+
+# 临时文件
+*.tmp
+.DS_Store
