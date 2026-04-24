@@ -1,6 +1,11 @@
 # SSH 远程服务器控制系统
 
+[![GitHub](https://img.shields.io/badge/GitHub-ssh--remote--control-blue?logo=github)](https://github.com/runningZ1/ssh-remote-control)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 一个完整的远程服务器自动化管理工具集，支持从零开始配置SSH密钥认证、SSL证书管理、长时间任务执行等功能。
+
+**GitHub 仓库**: https://github.com/runningZ1/ssh-remote-control
 
 ## 目录
 
