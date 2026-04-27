@@ -186,49 +186,39 @@ Alias: prod-server"
 
 ## 工作流程
 
-### SSH初始设置
+### SSH初始设置（推荐方式）
 
 **前提**：用户已提供 IP、用户名、密码
 
-**步骤1：进入项目目录**
+**使用统一CLI `sshctrl.py`**：
+```bash
+# 进入项目目录
+cd ssh-remote-control
+
+# 一键配置服务器（自动完成密钥生成、上传、配置）
+python sshctrl.py server add <IP> <用户名> <密码> [别名]
+
+# 验证
+ssh <别名> "whoami && hostname"
+```
+
+**或使用独立脚本（分步骤）**：
 ```bash
 cd scripts
-```
 
-**步骤2：安装依赖**
-```bash
-python -m pip install paramiko -q && python -c "import paramiko; print('ok')"
-```
-
-**步骤3：测试连接并启用公钥认证**
-```bash
+# 步骤1: 测试连接并启用公钥认证
 python setup_ssh_auth.py <IP> <用户名> <密码>
-```
-- 测试密码SSH连接
-- 启用PubkeyAuthentication
-- 安装tmux（会话持久性）
 
-**步骤4：生成专用SSH密钥**
-```bash
+# 步骤2: 生成专用SSH密钥
 python generate_ssh_key.py <IP>
-```
-- 创建无密码保护的Ed25519密钥对
 
-**步骤5：上传公钥**
-```bash
+# 步骤3: 上传公钥
 python upload_ssh_key.py <IP> <用户名> <密码>
-```
-- 通过SFTP追加到`~/.ssh/authorized_keys`
 
-**步骤6：配置SSH别名**
-```bash
+# 步骤4: 配置SSH别名
 python finalize_ssh_config.py <IP> <用户名> <别名>
-```
-- 修复私钥权限
-- 配置SSH别名（Host别名、keepalive设置）
 
-**步骤7：验证**
-```bash
+# 验证
 ssh <别名> "whoami && hostname"
 ```
 
@@ -252,19 +242,28 @@ scp <别名>:/remote/path/file.txt ./
 **必须使用tmux**（超过2分钟的操作）：
 - 部署、构建、大型文件传输、数据库迁移、编译
 
-**手动使用tmux**：
+**推荐：使用sshctrl CLI**：
 ```bash
-# 启动
-ssh <别名> "tmux new-session -d -s deploy 'cd /app && npm install && npm run build'"
+# 启动后台任务
+sshctrl tmux run <别名> <会话名> '<命令>'
 
 # 检查进度
-ssh <别名> "tmux capture-pane -t deploy -p | tail -50"
+sshctrl tmux check <别名> <会话名>
 
-# 完成后清理
-ssh <别名> "tmux kill-session -t deploy"
+# 查看完整输出
+sshctrl tmux check <别名> <会话名> --full
+
+# 接入会话（交互式）
+sshctrl tmux attach <别名> <会话名>
+
+# 终止会话
+sshctrl tmux kill <别名> <会话名>
+
+# 列出会话
+sshctrl tmux list <别名>
 ```
 
-**或使用tmux_helper.py**：
+**或使用tmux_helper.py（独立脚本）**：
 ```bash
 python tmux_helper.py run <别名> <会话名> '<命令>'
 python tmux_helper.py check <别名> <会话名>
@@ -310,6 +309,17 @@ export DP_Key='your_token'
 ```
 
 ### 步骤3：颁发证书
+
+**推荐使用sshctrl CLI**：
+```bash
+# 基本证书
+python sshctrl.py ssl issue <域名> <DNS提供商> --email <邮箱>
+
+# 通配符证书
+python sshctrl.py ssl issue <域名> <DNS提供商> --wildcard --email <邮箱>
+```
+
+**或使用独立脚本**：
 ```bash
 # 基本证书
 python setup_ssl.py <别名> <域名> <DNS提供商> --email <邮箱>
@@ -319,12 +329,15 @@ python setup_ssl.py <别名> <域名> <DNS提供商> --wildcard --email <邮箱>
 ```
 
 ### 步骤4：配置Nginx
+
+**推荐使用sshctrl CLI**：
+```bash
+python sshctrl.py ssl nginx <域名> [--root <路径>]
+```
+
+**或使用独立脚本**：
 ```bash
 python configure_nginx_ssl.py <别名> <域名> [选项]
-
-# 选项：
-#   --wildcard    通配符证书
-#   --root 路径   文档根目录（默认：/var/www/html）
 ```
 
 ### 验证
@@ -352,6 +365,14 @@ ssh <别名> "ls -l ~/.ssh/authorized_keys"
 ---
 
 ## 脚本清单
+
+### 统一CLI（推荐）
+
+| 脚本 | 功能 |
+|------|------|
+| `sshctrl.py` | 统一CLI入口：server/tmux/ssl/exec子命令 |
+
+### 独立脚本
 
 **注意**：所有脚本路径相对于项目根目录的 `scripts/` 文件夹
 

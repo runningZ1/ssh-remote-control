@@ -28,7 +28,9 @@
 - 服务器的IP地址、用户名和密码
 - Windows/Linux/macOS 系统
 
-### 5分钟快速配置
+### 5分钟快速配置（推荐方式）
+
+使用统一的CLI工具 `sshctrl`：
 
 ```bash
 # 1. 安装依赖
@@ -37,33 +39,38 @@ python -m pip install paramiko
 # 2. 进入项目目录
 cd ssh-remote-control
 
-# 3. 测试连接并启用公钥认证
-python scripts/setup_ssh_auth.py <服务器IP> <用户名> <密码>
+# 3. 一键配置服务器（自动完成SSH密钥生成、上传、配置）
+python sshctrl.py server add <服务器IP> <用户名> <密码> [别名]
 
-# 4. 生成SSH密钥
-python scripts/generate_ssh_key.py <服务器IP>
-
-# 5. 上传公钥到服务器
-python scripts/upload_ssh_key.py <服务器IP> <用户名> <密码>
-
-# 6. 配置SSH别名
-python scripts/finalize_ssh_config.py <服务器IP> <用户名> <别名>
-
-# 7. 验证连接（无需密码）
+# 4. 验证连接（无需密码）
 ssh <别名> "whoami"
 ```
 
-### 示例
+**示例**：
+```bash
+# 配置服务器，一句话搞定
+python sshctrl.py server add 38.76.206.12 root mypassword myserver
+
+# 验证
+ssh myserver "ls -la"
+```
+
+### 传统方式（4个独立脚本）
+
+如果需要分步骤操作，可使用独立脚本：
 
 ```bash
-# 配置服务器 38.76.206.12
-python scripts/setup_ssh_auth.py 38.76.206.12 root mypassword
-python scripts/generate_ssh_key.py 38.76.206.12
-python scripts/upload_ssh_key.py 38.76.206.12 root mypassword
-python scripts/finalize_ssh_config.py 38.76.206.12 root myserver
+# 1. 测试连接并启用公钥认证
+python scripts/setup_ssh_auth.py <服务器IP> <用户名> <密码>
 
-# 现在可以直接使用
-ssh myserver "ls -la"
+# 2. 生成SSH密钥
+python scripts/generate_ssh_key.py <服务器IP>
+
+# 3. 上传公钥到服务器
+python scripts/upload_ssh_key.py <服务器IP> <用户名> <密码>
+
+# 4. 配置SSH别名
+python scripts/finalize_ssh_config.py <服务器IP> <用户名> <别名>
 ```
 
 ## 功能特性
@@ -96,7 +103,35 @@ python -c "import paramiko; print('Paramiko安装成功')"
 
 ## 使用指南
 
-### 初次连接服务器
+### 统一CLI工具 sshctrl
+
+推荐使用 `sshctrl.py` 作为统一入口：
+
+```bash
+# 服务器管理
+python sshctrl.py server add <IP> <用户> <密码> [别名]   # 一键配置
+python sshctrl.py server list                              # 列出已配置服务器
+python sshctrl.py server remove <别名>                     # 移除服务器
+python sshctrl.py server ssh <别名> [命令]                 # SSH连接/执行
+
+# tmux会话管理
+python sshctrl.py tmux run <别名> <会话> <命令>           # 后台运行任务
+python sshctrl.py tmux check <别名> <会话> [--full]        # 查看输出
+python sshctrl.py tmux list <别名>                         # 列出会话
+python sshctrl.py tmux attach <别名> <会话>                # 接入会话
+python sshctrl.py tmux kill <别名> <会话>                 # 终止会话
+
+# SSL证书
+python sshctrl.py ssl issue <域名> <DNS提供商> [--wildcard] # 申请证书
+python sshctrl.py ssl nginx <域名> [--root <路径>]         # 配置Nginx
+
+# 快速执行
+python sshctrl.py exec <别名> "命令"                      # 执行命令
+```
+
+### 独立脚本（旧方式）
+
+如需分步骤操作，可使用 `scripts/` 目录下的独立脚本：
 
 #### 步骤1：测试连接并启用公钥认证
 
@@ -400,7 +435,21 @@ ssh myserver "cat ~/.acme.sh/example.com/example.com.log"
 
 ## 脚本说明
 
-### 核心脚本
+### 统一CLI工具（推荐）
+
+| 脚本文件 | 功能说明 | 使用场景 |
+|---------|---------|---------|
+| `sshctrl.py` | 统一CLI入口，管理所有功能 | 日常使用 |
+
+**sshctrl.py 子命令**：
+```bash
+sshctrl.py server add/list/remove/ssh   # 服务器管理
+sshctrl.py tmux run/check/list/attach/kill  # tmux会话
+sshctrl.py ssl issue/nginx               # SSL证书
+sshctrl.py exec                          # 快速执行
+```
+
+### 核心脚本（旧方式）
 
 | 脚本文件 | 功能说明 | 使用场景 |
 |---------|---------|---------|
@@ -554,6 +603,7 @@ ssh-remote-control/
 ├── README.md                          # 本文档
 ├── SERVER_CONNECTION.md               # 服务器连接信息（敏感信息，不提交）
 ├── SKILL.md                          # 技能说明文档
+├── sshctrl.py                        # 统一CLI入口（推荐使用）
 ├── .gitignore                        # Git忽略规则
 ├── scripts/                          # 核心脚本目录
 │   ├── setup_ssh_auth.py            # SSH认证配置
