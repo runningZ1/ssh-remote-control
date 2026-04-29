@@ -1,6 +1,7 @@
 """
 SSH远控 - 设置SSH认证
-测试连接并在远程服务器上启用公钥认证。
+此脚本仅用于初始配置阶段（建立密码连接并启用公钥认证）。
+配置完成后，后续所有操作必须使用SSH别名免密执行，禁止使用密码认证。
 """
 
 import sys
@@ -127,17 +128,19 @@ def main():
         else:
             print("正在安装tmux...")
 
-            # 使用utils中的install_package函数
-            ssh.close()
-
-            # 重新连接以使用别名（如果已配置）
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(server_ip, username=username, password=password, timeout=10)
-
-            # 检测并安装
-            from utils import detect_package_manager
-            pm = detect_package_manager(server_ip)  # 这里需要使用临时连接
+            # 直接在当前paramiko会话中检测包管理器并安装
+            managers = {
+                'apt-get': 'apt',
+                'yum': 'yum',
+                'dnf': 'dnf',
+                'pacman': 'pacman'
+            }
+            pm = None
+            for cmd, name in managers.items():
+                stdin, stdout, stderr = ssh.exec_command(f'command -v {cmd}')
+                if stdout.read().decode().strip():
+                    pm = name
+                    break
 
             if pm == 'apt':
                 cmd = 'sudo apt-get update -qq && sudo apt-get install -y tmux'

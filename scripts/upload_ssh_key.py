@@ -1,6 +1,7 @@
 """
 SSH远控 - 上传SSH密钥
-将生成的公钥上传到远程服务器的authorized_keys。
+此脚本仅用于初始配置阶段（将公钥上传到authorized_keys）。
+配置完成后，后续所有操作必须使用SSH别名免密执行，禁止使用密码认证。
 """
 
 import sys

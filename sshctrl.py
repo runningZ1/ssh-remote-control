@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-SSH Remote Control - 统一的远程服务器管理CLI
+SSH Remote Control - 核心CLI
+
+用途：建立与远程服务器的SSH免密验证连接。
+
+初始配置完成后，日常操作直接使用：
+    ssh <别名> "命令"
+    scp <别名>:
 
 用法:
-    sshctrl server add <IP> <用户名> <密码> [别名]
-    sshctrl server list
-    sshctrl server remove <别名>
-    sshctrl server ssh <别名> [命令]
-    sshctrl tmux run <别名> <会话名> <命令>
-    sshctrl tmux check <别名> <会话名> [--full]
-    sshctrl tmux list <别名>
-    sshctrl tmux attach <别名> <会话名>
-    sshctrl tmux kill <别名> <会话名>
-    sshctrl ssl issue <域名> <DNS提供商> [--wildcard] [--email <邮箱>]
-    sshctrl ssl nginx <域名> [--root <路径>]
-    sshctrl exec <别名> <命令>
+    sshctrl server add <IP> <用户名> <密码> [别名]   # 配置服务器SSH免密
+    sshctrl server list                              # 列出已配置服务器
+    sshctrl server remove <别名>                     # 移除服务器配置
+    sshctrl server ssh <别名> [命令]                 # SSH连接/执行
 """
 
 import argparse
@@ -24,18 +22,12 @@ import json
 import subprocess
 import platform
 import re
+import time
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 CONFIG_DIR = os.path.expanduser("~/.ssh/sshctrl")
 SERVERS_FILE = os.path.join(CONFIG_DIR, "servers.json")
-
-DNS_PROVIDERS = {
-    'cloudflare': {'name': 'Cloudflare', 'hook': 'dns_cf', 'env': ['CF_Token']},
-    'aliyun': {'name': '阿里云', 'hook': 'dns_ali', 'env': ['Ali_Key', 'Ali_Secret']},
-    'tencent': {'name': '腾讯云', 'hook': 'dns_tencent', 'env': ['Tencent_SecretId', 'Tencent_SecretKey']},
-    'dnspod': {'name': 'DNSPod', 'hook': 'dns_dp', 'env': ['DP_Id', 'DP_Key']},
-}
 
 
 def ensure_config_dir():
@@ -56,6 +48,7 @@ def save_servers(servers):
 
 
 def run_ssh_command(alias, command, capture=True, timeout=30):
+    """通过SSH在远程服务器上执行命令（免密方式）。"""
     try:
         result = subprocess.run(
             ['ssh', '-o', 'ConnectTimeout=10', alias, command],
@@ -68,6 +61,7 @@ def run_ssh_command(alias, command, capture=True, timeout=30):
 
 
 def validate_ip(ip):
+    """验证IP地址格式。"""
     pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
     if not re.match(pattern, ip):
         return False
@@ -75,34 +69,30 @@ def validate_ip(ip):
     return all(0 <= int(part) <= 255 for part in parts)
 
 
-def validate_domain(domain):
-    pattern = r'^([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}$'
-    return re.match(pattern, domain.lower()) is not None
-
-
 # ============== Server 子命令 ==============
 
 def cmd_server_add(args):
+    """配置服务器SSH免密连接（核心SOP流程）。"""
     import paramiko
 
     ip = args.IP
     username = args.username
     password = args.password
     alias = args.alias or ip.replace('.', '_')
-    skip_ssh = args.skip_ssh
 
     if not validate_ip(ip):
         print(f"✗ 无效的IP地址: {ip}")
         sys.exit(1)
 
     print(f"\n{'='*60}")
-    print("SSH Remote Control - 添加服务器")
+    print("SSH Remote Control - 配置服务器免密连接")
     print(f"{'='*60}")
     print(f"服务器: {ip}")
     print(f"用户: {username}")
     print(f"别名: {alias}")
     print(f"{'='*60}\n")
 
+    # 步骤1: 测试密码连接
     print("1️⃣ 测试SSH连接...")
     try:
         ssh = paramiko.SSHClient()
@@ -122,13 +112,7 @@ def cmd_server_add(args):
         print(f"   ✗ 连接失败: {e}")
         sys.exit(1)
 
-    if skip_ssh:
-        servers = load_servers()
-        servers[alias] = {'ip': ip, 'username': username}
-        save_servers(servers)
-        print(f"\n✓ 服务器信息已保存: {alias}")
-        return
-
+    # 步骤2: 生成SSH密钥
     print("\n2️⃣ 生成SSH密钥...")
     home = os.path.expanduser('~')
     key_name = f"id_ed25519_{ip.replace('.', '_')}"
@@ -150,6 +134,7 @@ def cmd_server_add(args):
     with open(key_path + '.pub') as f:
         pubkey = f.read().strip()
 
+    # 步骤3: 上传公钥
     print("\n3️⃣ 上传公钥到服务器...")
     try:
         ssh = paramiko.SSHClient()
@@ -177,6 +162,7 @@ def cmd_server_add(args):
         print(f"   ✗ 上传失败: {e}")
         sys.exit(1)
 
+    # 步骤4: 配置本地SSH
     print("\n4️⃣ 配置本地SSH...")
     ssh_dir = os.path.join(home, '.ssh')
     os.makedirs(ssh_dir, exist_ok=True)
@@ -224,17 +210,36 @@ Host {alias}
             f.write(config_entry)
         print(f"   ✓ SSH别名 '{alias}' 已添加")
 
+    # 保存服务器信息
     servers = load_servers()
     servers[alias] = {'ip': ip, 'username': username}
     save_servers(servers)
 
+    # 步骤5: 验证免密连接
+    print("\n5️⃣ 验证免密连接...")
+    time.sleep(1)
+    result = subprocess.run(
+        ['ssh', '-o', 'ConnectTimeout=10', alias, 'echo "✓ 免密连接成功"'],
+        capture_output=True, text=True, timeout=15
+    )
+    if result.returncode == 0 and '免密连接成功' in result.stdout:
+        print("   ✓ 免密连接验证通过")
+    else:
+        print("   ⚠ 免密连接验证失败，请检查:")
+        print(f"      ssh {alias} \"whoami\"")
+
     print(f"\n{'='*60}")
     print("✅ 服务器配置完成！")
     print(f"{'='*60}")
-    print(f"\n测试命令: ssh {alias} \"whoami\"")
+    print(f"\n验证命令: ssh {alias} \"whoami && hostname\"")
+    print(f"\n日常操作示例:")
+    print(f"  ssh {alias} \"docker ps\"")
+    print(f"  scp file.txt {alias}:/remote/path/")
+    print(f"\n⚠️  不要再使用密码认证，所有操作通过SSH别名完成")
 
 
 def cmd_server_list(args):
+    """列出已配置的服务器。"""
     servers = load_servers()
 
     if not servers:
@@ -251,6 +256,7 @@ def cmd_server_list(args):
 
 
 def cmd_server_remove(args):
+    """移除服务器配置。"""
     alias = args.alias
     home = os.path.expanduser('~')
 
@@ -288,6 +294,7 @@ def cmd_server_remove(args):
 
 
 def cmd_server_ssh(args):
+    """SSH连接到服务器。"""
     alias = args.alias
     command = args.command
 
@@ -305,239 +312,21 @@ def cmd_server_ssh(args):
         os.execvp('ssh', ['ssh', alias])
 
 
-# ============== Tmux 子命令 ==============
-
-def cmd_tmux_attach(args):
-    alias = args.alias
-    session = args.session
-
-    print(f"接入 tmux 会话 '{session}'...")
-    result = subprocess.run(['ssh', '-t', alias, f'tmux attach -t {session}'])
-    if result.returncode != 0:
-        print(f"✗ 会话不存在或已被终止")
-        sys.exit(1)
-
-
-def cmd_tmux_run(args):
-    alias = args.alias
-    session = args.session
-    command = args.command
-
-    print(f"🚀 在 tmux 会话 '{session}' 中启动命令...")
-
-    subprocess.run(
-        ['ssh', alias, f'tmux kill-session -t {session} 2>/dev/null || true'],
-        capture_output=True, timeout=10
-    )
-
-    result = subprocess.run(
-        ['ssh', alias, f'tmux new-session -d -s {session} "{command}"'],
-        capture_output=True, text=True, timeout=30
-    )
-
-    if result.returncode != 0:
-        print(f"✗ 启动失败: {result.stderr}")
-        sys.exit(1)
-
-    print(f"✓ 命令已在后台会话 '{session}' 中启动")
-    print(f"\n查看状态: sshctrl tmux check {alias} {session}")
-    print(f"接入会话: sshctrl tmux attach {alias} {session}")
-    print(f"终止会话: sshctrl tmux kill {alias} {session}")
-
-
-def cmd_tmux_check(args):
-    alias = args.alias
-    session = args.session
-    full = args.full
-
-    result = subprocess.run(
-        ['ssh', alias, f'tmux has-session -t {session} 2>/dev/null'],
-        capture_output=True, timeout=10
-    )
-
-    if result.returncode != 0:
-        print(f"✗ 会话 '{session}' 不存在或已完成")
-        sys.exit(1)
-
-    print(f"✓ 会话 '{session}' 正在运行")
-
-    if full:
-        result = subprocess.run(
-            ['ssh', alias, f'tmux capture-pane -t {session} -p -S -'],
-            capture_output=True, text=True, timeout=30
-        )
-    else:
-        result = subprocess.run(
-            ['ssh', alias, f'tmux capture-pane -t {session} -p | tail -50'],
-            capture_output=True, text=True, timeout=30
-        )
-
-    print(f"\n--- 来自 '{session}' 的输出 ---")
-    print(result.stdout)
-    print("--- 输出结束 ---\n")
-
-
-def cmd_tmux_list(args):
-    alias = args.alias
-
-    print(f"📋 正在列出 {alias} 上的 tmux 会话...")
-
-    result = subprocess.run(
-        ['ssh', alias, 'tmux ls 2>/dev/null'],
-        capture_output=True, text=True, timeout=10
-    )
-
-    if result.returncode != 0:
-        print("✗ 没有活动的 tmux 会话")
-        sys.exit(1)
-
-    print("\n活动会话:")
-    print(result.stdout)
-
-
-def cmd_tmux_kill(args):
-    alias = args.alias
-    session = args.session
-
-    print(f"🛑 正在终止会话 '{session}'...")
-
-    result = subprocess.run(
-        ['ssh', alias, f'tmux kill-session -t {session}'],
-        capture_output=True, text=True, timeout=10
-    )
-
-    if result.returncode != 0:
-        print(f"✗ 会话不存在")
-        sys.exit(1)
-
-    print(f"✓ 会话 '{session}' 已终止")
-
-
-# ============== SSL 子命令 ==============
-
-def cmd_ssl_issue(args):
-    import os as os_module
-
-    domain = args.domain
-    dns_provider = args.dns_provider
-    wildcard = args.wildcard
-    email = args.email or f'admin@{domain}'
-
-    if not validate_domain(domain):
-        print(f"✗ 无效的域名: {domain}")
-        sys.exit(1)
-
-    if dns_provider not in DNS_PROVIDERS:
-        print(f"✗ 未知DNS提供商: {dns_provider}")
-        print(f"支持的提供商: {', '.join(DNS_PROVIDERS.keys())}")
-        sys.exit(1)
-
-    provider = DNS_PROVIDERS[dns_provider]
-
-    missing = []
-    for var in provider['env']:
-        if not os_module.environ.get(var):
-            missing.append(var)
-
-    if missing:
-        print(f"✗ 缺少环境变量: {', '.join(missing)}")
-        print(f"\n设置方法:")
-        for var in missing:
-            print(f"  export {var}='your_value'")
-        sys.exit(1)
-
-    print(f"\n{'='*60}")
-    print("SSL证书申请")
-    print(f"{'='*60}")
-    print(f"域名: {domain}")
-    print(f"提供商: {provider['name']}")
-    print(f"通配符: {'是' if wildcard else '否'}")
-    print(f"邮箱: {email}")
-    print(f"{'='*60}\n")
-
-    print("⚠️  SSL证书申请需要在已配置SSH别名的服务器上执行。")
-    print("   请先配置服务器: sshctrl server add <IP> <用户> <密码> [别名]")
-    print(f"\n   然后使用SSH别名运行证书申请命令。")
-
-
-def cmd_ssl_nginx(args):
-    domain = args.domain
-    root = args.root
-
-    if not validate_domain(domain):
-        print(f"✗ 无效的域名: {domain}")
-        sys.exit(1)
-
-    print(f"\n{'='*60}")
-    print("Nginx SSL配置")
-    print(f"{'='*60}")
-    print(f"域名: {domain}")
-    print(f"文档根目录: {root}")
-    print(f"{'='*60}\n")
-
-    print("⚠️  Nginx SSL配置需要在服务器上执行。")
-    print("   请先配置服务器并申请证书。")
-    print(f"\n   配置文件示例:")
-    print(f"""
-server {{
-    listen 80;
-    server_name {domain};
-    return 301 https://$server_name$request_uri;
-}}
-
-server {{
-    listen 443 ssl http2;
-    server_name {domain};
-
-    ssl_certificate /etc/nginx/ssl/{domain}.crt;
-    ssl_certificate_key /etc/nginx/ssl/{domain}.key;
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-
-    root {root};
-    index index.html index.htm;
-
-    location / {{
-        try_files $uri $uri/ =404;
-    }}
-}}
-""")
-
-
-# ============== Exec 子命令 ==============
-
-def cmd_exec(args):
-    alias = args.alias
-    command = args.command
-
-    servers = load_servers()
-    if alias not in servers:
-        print(f"✗ 服务器 '{alias}' 未找到")
-        print(f"可用服务器: {', '.join(servers.keys()) if servers else '无'}")
-        sys.exit(1)
-
-    result = run_ssh_command(alias, command)
-    print(result.stdout)
-    if result.stderr:
-        print(result.stderr, file=sys.stderr)
-    sys.exit(result.returncode)
-
-
 # ============== 主入口 ==============
 
 def main():
     parser = argparse.ArgumentParser(
-        description="SSH Remote Control - 统一的远程服务器管理CLI",
+        description="SSH Remote Control - SSH免密连接配置工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+核心SOP流程：
+  1. sshctrl server add <IP> <用户> <密码> [别名]  # 配置免密
+  2. ssh <别名> "命令"                              # 日常操作
+
 示例:
   sshctrl server add 192.168.1.100 root password myserver
   sshctrl server list
   sshctrl server ssh myserver "uptime"
-  sshctrl tmux run myserver deploy "npm run build"
-  sshctrl tmux check myserver deploy
-  sshctrl exec myserver "df -h"
         """
     )
     parser.add_argument('--version', action='version', version=f'sshctrl {VERSION}')
@@ -553,7 +342,6 @@ def main():
     add_parser.add_argument('username', help='用户名')
     add_parser.add_argument('password', help='密码')
     add_parser.add_argument('alias', nargs='?', help='SSH别名（可选）')
-    add_parser.add_argument('--skip-ssh', action='store_true', help='仅保存信息')
 
     server_subparsers.add_parser('list', help='列出所有已配置的服务器')
 
@@ -563,49 +351,6 @@ def main():
     ssh_parser = server_subparsers.add_parser('ssh', help='SSH连接到服务器')
     ssh_parser.add_argument('alias', help='服务器别名')
     ssh_parser.add_argument('command', nargs='?', default=None, help='要执行的命令（可选）')
-
-    # tmux 子命令
-    tmux_parser = subparsers.add_parser('tmux', help='tmux会话管理')
-    tmux_subparsers = tmux_parser.add_subparsers(dest='tmux_command')
-
-    run_parser = tmux_subparsers.add_parser('run', help='在tmux后台运行命令')
-    run_parser.add_argument('alias', help='服务器别名')
-    run_parser.add_argument('session', help='tmux会话名称')
-    run_parser.add_argument('command', help='要执行的命令')
-
-    check_parser = tmux_subparsers.add_parser('check', help='检查tmux会话输出')
-    check_parser.add_argument('alias', help='服务器别名')
-    check_parser.add_argument('session', help='tmux会话名称')
-    check_parser.add_argument('--full', action='store_true', help='显示完整输出')
-
-    tmux_subparsers.add_parser('list', help='列出所有tmux会话', aliases=['ls'])
-
-    attach_parser = tmux_subparsers.add_parser('attach', help='接入tmux会话')
-    attach_parser.add_argument('alias', help='服务器别名')
-    attach_parser.add_argument('session', help='tmux会话名称')
-
-    kill_parser = tmux_subparsers.add_parser('kill', help='终止tmux会话')
-    kill_parser.add_argument('alias', help='服务器别名')
-    kill_parser.add_argument('session', help='tmux会话名称')
-
-    # ssl 子命令
-    ssl_parser = subparsers.add_parser('ssl', help='SSL证书管理')
-    ssl_subparsers = ssl_parser.add_subparsers(dest='ssl_command')
-
-    issue_parser = ssl_subparsers.add_parser('issue', help='申请SSL证书')
-    issue_parser.add_argument('domain', help='域名')
-    issue_parser.add_argument('dns_provider', help='DNS提供商')
-    issue_parser.add_argument('--wildcard', action='store_true', help='申请通配符证书')
-    issue_parser.add_argument('--email', help='通知邮箱')
-
-    nginx_parser = ssl_subparsers.add_parser('nginx', help='配置Nginx SSL')
-    nginx_parser.add_argument('domain', help='域名')
-    nginx_parser.add_argument('--root', default='/var/www/html', help='文档根目录')
-
-    # exec 子命令
-    exec_parser = subparsers.add_parser('exec', help='快速执行命令')
-    exec_parser.add_argument('alias', help='服务器别名')
-    exec_parser.add_argument('command', help='要执行的命令')
 
     args = parser.parse_args()
 
@@ -620,28 +365,6 @@ def main():
             cmd_server_ssh(args)
         else:
             server_parser.print_help()
-    elif args.command == 'tmux':
-        if args.tmux_command in ('list', 'ls'):
-            cmd_tmux_list(args)
-        elif args.tmux_command == 'run':
-            cmd_tmux_run(args)
-        elif args.tmux_command == 'check':
-            cmd_tmux_check(args)
-        elif args.tmux_command == 'attach':
-            cmd_tmux_attach(args)
-        elif args.tmux_command == 'kill':
-            cmd_tmux_kill(args)
-        else:
-            tmux_parser.print_help()
-    elif args.command == 'ssl':
-        if args.ssl_command == 'issue':
-            cmd_ssl_issue(args)
-        elif args.ssl_command == 'nginx':
-            cmd_ssl_nginx(args)
-        else:
-            ssl_parser.print_help()
-    elif args.command == 'exec':
-        cmd_exec(args)
     else:
         parser.print_help()
 
