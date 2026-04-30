@@ -20,12 +20,13 @@ pip install paramiko
 ### 2. 配置免密连接（只需一次）
 
 ```bash
-python sshctrl.py server add <IP> <用户名> <密码> [别名]
+python sshctrl.py server add <host> <用户名> <密码> [别名] [--port 端口]
 ```
 
 示例：
 ```bash
 python sshctrl.py server add 38.76.206.12 root mypassword myserver
+python sshctrl.py server add connect.nmb2.seetacloud.com root mypassword seetacloud_20605 --port 20605
 ```
 
 ### 3. 日常操作（直接用SSH命令）
@@ -77,7 +78,7 @@ scp myserver:/remote/path/file.txt ./
 
 ```bash
 # 配置服务器免密连接
-python sshctrl.py server add <IP> <用户名> <密码> [别名]
+python sshctrl.py server add <host> <用户名> <密码> [别名] [--port 端口]
 
 # 列出已配置服务器
 python sshctrl.py server list
@@ -96,7 +97,7 @@ python sshctrl.py server repair-pubkey <别名> <密码>
 
 ```bash
 # 1) 一次性配置免密
-python sshctrl.py server add <IP> <用户名> <密码> <别名>
+python sshctrl.py server add <host> <用户名> <密码> <别名> [--port 端口]
 
 # 2) 如果免密失败，自动修复服务端公钥认证
 python sshctrl.py server repair-pubkey <别名> <密码>
@@ -194,7 +195,7 @@ ssh -o BatchMode=yes -o ConnectTimeout=10 <别名> "echo ok"
 chmod 600 ~/.ssh/id_ed25519_*
 
 # Windows - 重新运行配置
-python sshctrl.py server add <IP> <用户> <密码> [别名]
+python sshctrl.py server add <host> <用户> <密码> [别名] [--port 端口]
 ```
 
 ### Windows 特殊情况：权限修复失败
@@ -231,6 +232,36 @@ ssh-keygen -R <服务器IP>
 - 密码不会保存
 - 所有操作使用SSH密钥免密执行
 - 建议在服务器上禁用密码认证
+
+---
+
+## 调用策略（避免错误调用形式）
+
+适用于在其他项目中调用本技能时，防止退回 `python <<'PYEOF' + paramiko` 形式。
+
+### 强制规则
+
+1. 首次引导阶段，最多允许一次：
+   `python sshctrl.py server add ...`
+2. 后续所有远程执行只允许：
+   `ssh <别名> "命令"`、`scp ...`
+3. 禁止：
+   `python <<'PYEOF'`、`paramiko`、`sshpass`、任何明文密码远控脚本
+
+### 推荐任务前置语句
+
+```text
+使用 $ssh-remote-control 技能。
+禁止 python<<PYEOF、paramiko、sshpass。
+只用 ssh/scp：ssh <alias> "<command>"。
+```
+
+### 出现偏航时的纠正语句
+
+```text
+停止当前实现。你违反了远程执行策略。
+重新执行：仅使用 `ssh <alias> "<command>"`。
+```
 
 ---
 

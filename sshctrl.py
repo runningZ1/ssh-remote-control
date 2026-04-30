@@ -9,7 +9,7 @@ SSH Remote Control - 核心CLI
     scp <别名>:
 
 用法:
-    sshctrl server add <IP> <用户名> <密码> [别名]   # 配置服务器SSH免密
+    sshctrl server add <host> <用户名> <密码> [别名] [--port 端口]  # 配置服务器SSH免密
     sshctrl server list                              # 列出已配置服务器
     sshctrl server remove <别名>                     # 移除服务器配置
     sshctrl server ssh <别名> [命令]                 # SSH连接/执行
@@ -123,13 +123,16 @@ def diagnose_connection_failure(alias, ip, username, password):
     print(f"     ssh -vvv -o BatchMode=yes {alias} \"echo ok\"")
 
 
-def validate_ip(ip):
-    """验证IP地址格式。"""
-    pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
-    if not re.match(pattern, ip):
-        return False
-    parts = ip.split('.')
-    return all(0 <= int(part) <= 255 for part in parts)
+def validate_host(host):
+    """验证主机名或IP地址格式。"""
+    ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+    if re.match(ip_pattern, host):
+        parts = host.split('.')
+        return all(0 <= int(part) <= 255 for part in parts)
+
+    # 域名（宽松校验）
+    domain_pattern = r'^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}[a-zA-Z0-9]$'
+    return re.match(domain_pattern, host) is not None
 
 
 # ============== Server 子命令 ==============
@@ -138,19 +141,23 @@ def cmd_server_add(args):
     """配置服务器SSH免密连接（核心SOP流程）。"""
     import paramiko
 
-    ip = args.IP
+    host = args.host
+    port = args.port
     username = args.username
     password = args.password
-    alias = args.alias or ip.replace('.', '_')
+    alias = args.alias or host.replace('.', '_').replace('-', '_')
 
-    if not validate_ip(ip):
-        print(f"✗ 无效的IP地址: {ip}")
+    if not validate_host(host):
+        print(f"✗ 无效的主机地址: {host}")
+        sys.exit(1)
+    if not (1 <= port <= 65535):
+        print(f"✗ 无效端口: {port}")
         sys.exit(1)
 
     print(f"\n{'='*60}")
     print("SSH Remote Control - 配置服务器免密连接")
     print(f"{'='*60}")
-    print(f"服务器: {ip}")
+    print(f"服务器: {host}:{port}")
     print(f"用户: {username}")
     print(f"别名: {alias}")
     print(f"{'='*60}\n")
@@ -160,7 +167,7 @@ def cmd_server_add(args):
     try:
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(ip, username=username, password=password, timeout=10)
+        ssh.connect(host, port=port, username=username, password=password, timeout=10)
         print("   ✓ 连接成功")
 
         stdin, stdout, stderr = ssh.exec_command('uname -a')
@@ -178,14 +185,14 @@ def cmd_server_add(args):
     # 步骤2: 生成SSH密钥
     print("\n2️⃣ 生成SSH密钥...")
     home = os.path.expanduser('~')
-    key_name = f"id_ed25519_{ip.replace('.', '_')}"
+    key_name = f"id_ed25519_{host.replace('.', '_').replace('-', '_')}_{port}"
     key_path = os.path.join(home, '.ssh', key_name)
 
     if os.path.exists(key_path):
         print(f"   ✓ 密钥已存在: {key_name}")
     else:
         result = subprocess.run(
-            ['ssh-keygen', '-t', 'ed25519', '-f', key_path, '-N', '', '-C', f'sshctrl-{ip}'],
+            ['ssh-keygen', '-t', 'ed25519', '-f', key_path, '-N', '', '-C', f'sshctrl-{host}:{port}'],
             capture_output=True, text=True
         )
         if result.returncode == 0:
@@ -202,7 +209,7 @@ def cmd_server_add(args):
     try:
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(ip, username=username, password=password, timeout=10)
+        ssh.connect(host, port=port, username=username, password=password, timeout=10)
 
         stdin, stdout, stderr = ssh.exec_command(f'eval echo ~{username}')
         user_home = stdout.read().decode().strip() or ('/root' if username == 'root' else f'/home/{username}')
@@ -260,7 +267,8 @@ def cmd_server_add(args):
     else:
         config_entry = f"""
 Host {alias}
-    HostName {ip}
+    HostName {host}
+    Port {port}
     User {username}
     IdentityFile ~/.ssh/{key_name}
     IdentitiesOnly yes
@@ -275,7 +283,7 @@ Host {alias}
 
     # 保存服务器信息
     servers = load_servers()
-    servers[alias] = {'ip': ip, 'username': username}
+    servers[alias] = {'host': host, 'ip': host, 'port': port, 'username': username}
     save_servers(servers)
 
     # 步骤5: 验证免密连接
@@ -290,7 +298,7 @@ Host {alias}
     else:
         print("   ⚠ 免密连接验证失败，请检查:")
         print(f"      ssh {alias} \"whoami\"")
-        diagnose_connection_failure(alias, ip, username, password)
+        diagnose_connection_failure(alias, host, username, password)
 
     print(f"\n{'='*60}")
     print("✅ 服务器配置完成！")
@@ -314,7 +322,9 @@ def cmd_server_list(args):
     print(f"\n已配置的服务器 ({len(servers)}台):\n")
     for alias, info in sorted(servers.items()):
         print(f"  {alias}")
-        print(f"    IP: {info.get('ip', 'N/A')}")
+        display_host = info.get('host') or info.get('ip', 'N/A')
+        print(f"    主机: {display_host}")
+        print(f"    端口: {info.get('port', 22)}")
         print(f"    用户: {info.get('username', 'N/A')}")
         print()
 
@@ -389,13 +399,14 @@ def cmd_server_repair_pubkey(args):
         print(f"可用服务器: {', '.join(servers.keys()) if servers else '无'}")
         sys.exit(1)
 
-    ip = servers[alias].get('ip')
+    host = servers[alias].get('host') or servers[alias].get('ip')
+    port = int(servers[alias].get('port', 22))
     username = servers[alias].get('username')
 
     print(f"\n{'='*60}")
     print("SSH Remote Control - 自动修复服务端公钥认证")
     print(f"{'='*60}")
-    print(f"服务器: {ip}")
+    print(f"服务器: {host}:{port}")
     print(f"用户: {username}")
     print(f"别名: {alias}")
     print(f"{'='*60}\n")
@@ -403,7 +414,7 @@ def cmd_server_repair_pubkey(args):
     try:
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(ip, username=username, password=password, timeout=10)
+        ssh.connect(host, port=port, username=username, password=password, timeout=10)
         print("1️⃣ 密码连接测试...")
         print("   ✓ 连接成功")
 
@@ -489,11 +500,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 核心SOP流程：
-  1. sshctrl server add <IP> <用户> <密码> [别名]  # 配置免密
+  1. sshctrl server add <host> <用户> <密码> [别名] [--port 端口]  # 配置免密
   2. ssh <别名> "命令"                              # 日常操作
 
 示例:
   sshctrl server add 192.168.1.100 root password myserver
+  sshctrl server add connect.nmb2.seetacloud.com root password myserver --port 20605
   sshctrl server repair-pubkey myserver password
   sshctrl server list
   sshctrl server ssh myserver "uptime"
@@ -508,10 +520,11 @@ def main():
     server_subparsers = server_parser.add_subparsers(dest='server_command')
 
     add_parser = server_subparsers.add_parser('add', help='添加并配置新服务器')
-    add_parser.add_argument('IP', help='服务器IP地址')
+    add_parser.add_argument('host', help='服务器主机（IP或域名）')
     add_parser.add_argument('username', help='用户名')
     add_parser.add_argument('password', help='密码')
     add_parser.add_argument('alias', nargs='?', help='SSH别名（可选）')
+    add_parser.add_argument('--port', type=int, default=22, help='SSH端口（默认22）')
 
     server_subparsers.add_parser('list', help='列出所有已配置的服务器')
 
