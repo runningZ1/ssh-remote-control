@@ -24,7 +24,7 @@ import platform
 import re
 import time
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 CONFIG_DIR = os.path.expanduser("~/.ssh/sshctrl")
 SERVERS_FILE = os.path.join(CONFIG_DIR, "servers.json")
@@ -58,6 +58,69 @@ def run_ssh_command(alias, command, capture=True, timeout=30):
     except subprocess.TimeoutExpired:
         print(f"✗ 命令执行超时（{timeout}秒）")
         sys.exit(1)
+
+
+def run_local_command(cmd, timeout=30):
+    """执行本地命令并返回结果。"""
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def _upsert_remote_sshd_config(ssh, key, value):
+    """在远程 sshd_config 中更新或追加配置项。"""
+    cmd = (
+        f"grep -qE '^[[:space:]]*{key}' /etc/ssh/sshd_config "
+        f"&& sed -i 's|^[[:space:]]*{key}.*|{key} {value}|' /etc/ssh/sshd_config "
+        f"|| echo '{key} {value}' >> /etc/ssh/sshd_config"
+    )
+    stdin, stdout, stderr = ssh.exec_command(cmd)
+    rc = stdout.channel.recv_exit_status()
+    if rc != 0:
+        err = stderr.read().decode(errors='ignore').strip()
+        raise RuntimeError(f"更新 {key} 失败: {err}")
+
+
+def diagnose_connection_failure(alias, ip, username, password):
+    """连接失败时给出更明确的诊断结论。"""
+    print("\n   诊断信息:")
+    try:
+        probe = run_local_command(
+            ['ssh', '-vvv', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', alias, 'echo ok'],
+            timeout=20
+        )
+        probe_msg = (probe.stderr or "") + (probe.stdout or "")
+    except Exception as e:
+        probe_msg = str(e)
+
+    if "REMOTE HOST IDENTIFICATION HAS CHANGED" in probe_msg:
+        print("   - 检测到主机指纹冲突")
+        print(f"   - 处理命令: ssh-keygen -R {ip}")
+        return
+
+    if "Permission denied (password)" in probe_msg:
+        print("   - 服务器拒绝公钥认证，当前回退到密码认证")
+        try:
+            import paramiko
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(ip, username=username, password=password, timeout=10)
+            stdin, stdout, stderr = ssh.exec_command(
+                "sshd -T | grep -E 'pubkeyauthentication|passwordauthentication|authorizedkeysfile'"
+            )
+            info = stdout.read().decode(errors='ignore').strip()
+            ssh.close()
+            if info:
+                print("   - 服务端 sshd 当前策略:")
+                for line in info.splitlines():
+                    print(f"     {line}")
+            else:
+                print("   - 未读取到 sshd 策略，请手动执行: sshd -T")
+        except Exception as e:
+            print(f"   - 无法读取服务端 sshd 策略: {e}")
+        print(f"   - 建议执行: python sshctrl.py server repair-pubkey {alias} <密码>")
+        return
+
+    print("   - 未匹配到已知特征，请执行:")
+    print(f"     ssh -vvv -o BatchMode=yes {alias} \"echo ok\"")
 
 
 def validate_ip(ip):
@@ -227,6 +290,7 @@ Host {alias}
     else:
         print("   ⚠ 免密连接验证失败，请检查:")
         print(f"      ssh {alias} \"whoami\"")
+        diagnose_connection_failure(alias, ip, username, password)
 
     print(f"\n{'='*60}")
     print("✅ 服务器配置完成！")
@@ -312,6 +376,111 @@ def cmd_server_ssh(args):
         os.execvp('ssh', ['ssh', alias])
 
 
+def cmd_server_repair_pubkey(args):
+    """自动修复服务端公钥认证配置，并验证免密连接。"""
+    import paramiko
+
+    alias = args.alias
+    password = args.password
+
+    servers = load_servers()
+    if alias not in servers:
+        print(f"✗ 服务器 '{alias}' 未找到")
+        print(f"可用服务器: {', '.join(servers.keys()) if servers else '无'}")
+        sys.exit(1)
+
+    ip = servers[alias].get('ip')
+    username = servers[alias].get('username')
+
+    print(f"\n{'='*60}")
+    print("SSH Remote Control - 自动修复服务端公钥认证")
+    print(f"{'='*60}")
+    print(f"服务器: {ip}")
+    print(f"用户: {username}")
+    print(f"别名: {alias}")
+    print(f"{'='*60}\n")
+
+    try:
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(ip, username=username, password=password, timeout=10)
+        print("1️⃣ 密码连接测试...")
+        print("   ✓ 连接成功")
+
+        print("\n2️⃣ 备份并更新 /etc/ssh/sshd_config ...")
+        stdin, stdout, stderr = ssh.exec_command(
+            "cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.$(date +%F-%H%M%S)"
+        )
+        rc = stdout.channel.recv_exit_status()
+        if rc != 0:
+            err = stderr.read().decode(errors='ignore').strip()
+            raise RuntimeError(f"备份 sshd_config 失败: {err}")
+
+        _upsert_remote_sshd_config(ssh, "PubkeyAuthentication", "yes")
+        _upsert_remote_sshd_config(
+            ssh, "AuthorizedKeysFile", ".ssh/authorized_keys .ssh/authorized_keys2"
+        )
+        _upsert_remote_sshd_config(ssh, "PermitRootLogin", "prohibit-password")
+        print("   ✓ 配置已更新")
+
+        print("\n3️⃣ 语法检查并重载 sshd ...")
+        stdin, stdout, stderr = ssh.exec_command("sshd -t")
+        rc = stdout.channel.recv_exit_status()
+        if rc != 0:
+            err = stderr.read().decode(errors='ignore').strip()
+            raise RuntimeError(f"sshd -t 失败: {err}")
+
+        stdin, stdout, stderr = ssh.exec_command("systemctl reload sshd")
+        rc = stdout.channel.recv_exit_status()
+        if rc != 0:
+            err = stderr.read().decode(errors='ignore').strip()
+            raise RuntimeError(f"重载 sshd 失败: {err}")
+        print("   ✓ sshd 重载成功")
+
+        stdin, stdout, stderr = ssh.exec_command(
+            "sshd -T | grep -E 'pubkeyauthentication|passwordauthentication|authorizedkeysfile|permitrootlogin'"
+        )
+        policy = stdout.read().decode(errors='ignore').strip()
+        print("\n4️⃣ 服务端生效策略:")
+        if policy:
+            for line in policy.splitlines():
+                print(f"   {line}")
+        else:
+            print("   ⚠ 未读取到策略输出")
+
+        ssh.close()
+
+        print("\n5️⃣ 本地免密回归验证...")
+        verify = run_local_command(
+            ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', alias, 'whoami && hostname'],
+            timeout=20
+        )
+        if verify.returncode == 0:
+            print("   ✓ 免密验证通过")
+            out = (verify.stdout or "").strip()
+            if out:
+                print("   返回:")
+                for line in out.splitlines():
+                    print(f"   {line}")
+        else:
+            print("   ⚠ 免密验证未通过")
+            err = (verify.stderr or "").strip()
+            if err:
+                print(f"   错误: {err}")
+            print(f"   建议排查: ssh -vvv -o BatchMode=yes {alias} \"echo ok\"")
+
+        print(f"\n{'='*60}")
+        print("✅ 修复流程执行完成")
+        print(f"{'='*60}")
+
+    except paramiko.AuthenticationException:
+        print("✗ 密码认证失败，请检查密码")
+        sys.exit(1)
+    except Exception as e:
+        print(f"✗ 修复失败: {e}")
+        sys.exit(1)
+
+
 # ============== 主入口 ==============
 
 def main():
@@ -325,6 +494,7 @@ def main():
 
 示例:
   sshctrl server add 192.168.1.100 root password myserver
+  sshctrl server repair-pubkey myserver password
   sshctrl server list
   sshctrl server ssh myserver "uptime"
         """
@@ -352,6 +522,13 @@ def main():
     ssh_parser.add_argument('alias', help='服务器别名')
     ssh_parser.add_argument('command', nargs='?', default=None, help='要执行的命令（可选）')
 
+    repair_parser = server_subparsers.add_parser(
+        'repair-pubkey',
+        help='自动修复服务端公钥认证并验证免密连接'
+    )
+    repair_parser.add_argument('alias', help='服务器别名')
+    repair_parser.add_argument('password', help='服务器密码（仅用于本次修复）')
+
     args = parser.parse_args()
 
     if args.command == 'server':
@@ -363,6 +540,8 @@ def main():
             cmd_server_remove(args)
         elif args.server_command == 'ssh':
             cmd_server_ssh(args)
+        elif args.server_command == 'repair-pubkey':
+            cmd_server_repair_pubkey(args)
         else:
             server_parser.print_help()
     else:

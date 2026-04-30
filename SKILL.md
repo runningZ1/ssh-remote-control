@@ -89,6 +89,9 @@ scp <别名>:/remote/path/file.txt ./
 # 配置服务器免密连接（仅需执行一次）
 python sshctrl.py server add <IP> <用户名> <密码> [别名]
 
+# 自动修复服务端公钥认证（免密失败时）
+python sshctrl.py server repair-pubkey <别名> <密码>
+
 # 列出已配置服务器
 python sshctrl.py server list
 
@@ -131,6 +134,26 @@ ssh <别名> "sshd -T | grep -E 'pubkeyauth|authorizedkeys'"
 ssh <别名> "ls -l ~/.ssh/authorized_keys"
 ```
 
+### 关键特例：脚本显示配置完成，但免密仍失败
+
+当 `sshctrl.py server add` 输出“配置完成”但 `ssh <别名>` 仍失败时，按下面顺序排查：
+
+```bash
+# 1) 先排除 known_hosts 冲突
+ssh-keygen -R <服务器IP>
+
+# 2) 禁止交互模式，快速看真实认证结果
+ssh -vvv -o BatchMode=yes -o ConnectTimeout=10 <别名> "echo ok"
+```
+
+如果日志末尾是 `Permission denied (password)`，说明公钥未被服务端接受。此时在服务器侧检查：
+
+```bash
+sshd -T | grep -E 'pubkeyauthentication|passwordauthentication|authorizedkeysfile'
+```
+
+若返回 `pubkeyauthentication no`，需要先开启公钥认证，再重载 `sshd`。否则该技能只能走密码路径，无法达到“免密 + 原生 ssh”成功标准。
+
 ---
 
 ## 文件结构
@@ -151,6 +174,20 @@ ssh-remote-control/
 1. `ssh <别名> "whoami"` 无需密码执行成功
 2. 用户确认可以直接使用SSH命令操作服务器
 3. 后续操作不需要任何脚本
+4. （建议）`ssh -o BatchMode=yes <别名> "echo ok"` 返回成功
+5. （建议）服务器 `sshd -T` 显示 `pubkeyauthentication yes`
+
+---
+
+## 自动化闭环（新增）
+
+当 `server add` 后免密失败，统一按以下闭环执行：
+
+1. `python sshctrl.py server repair-pubkey <别名> <密码>`
+2. `ssh -o BatchMode=yes <别名> "whoami && hostname"`
+3. `ssh <别名> "uptime && free -h && df -h /"`
+
+这三步通过后，即可认为技能完成“可稳定复用”的交付标准。
 
 ---
 
