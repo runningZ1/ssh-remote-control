@@ -75,11 +75,47 @@ python sshctrl.py server add connect.nmb2.seetacloud.com root <密码> seetaclou
 ssh <别名> "docker ps"
 ssh <别名> "cd /opt/app && git pull && npm install"
 
-# 文件传输
-scp local_file.txt <别名>:/remote/path/
-scp -r local_dir/ <别名>:/remote/path/
+# 文件传输（推荐 rsync）
+rsync 是传输文件/目录的最佳工具，支持增量传输、断点续传、压缩传输、保留属性和进度显示。
+
+```bash
+# 传输单个文件
+rsync -avz --progress local_file.txt <别名>:/remote/path/
+
+# 传输整个目录（推荐）
+rsync -avz --progress local_dir/ <别名>:/remote/path/
+
+# 大文件推荐加上 --partial 支持断点续传
+rsync -avz --partial --progress large_file.txt <别名>:/remote/path/
+
+# 非默认SSH端口
+rsync -avz -e "ssh -p 2222" local_dir/ <别名>:/remote/path/
 
 # 下载文件
+rsync -avz --progress <别名>:/remote/path/file.txt ./
+rsync -avz --progress <别名>:/remote/path/folder/ ./local/folder/
+```
+
+**rsync 优势**：比 scp 更智能，只传输变化的部分（增量传输），节省时间和流量。适合大文件或目录同步。
+
+**备选：SFTP reget**（当 rsync 未安装或安装失败时）
+```bash
+# 上传
+sftp <别名> << 'EOF'
+put local_file.txt /remote/path/
+put -r local_dir/ /remote/path/
+EOF
+
+# 断点续传下载（大文件推荐）
+sftp <别名> << 'EOF'
+reget /remote/path/large_file.zip
+EOF
+```
+
+**备选 scp**（简单场景）：
+```bash
+scp local_file.txt <别名>:/remote/path/
+scp -r local_dir/ <别名>:/remote/path/
 scp <别名>:/remote/path/file.txt ./
 ```
 
